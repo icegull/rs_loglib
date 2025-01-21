@@ -1,0 +1,19 @@
+[package]
+name = "rs_loglib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+parking_lot = "0.12" # Thread-safe mutex implementation
+tracing = "0.1" # Core logging functionality
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter", # Environment variable filtering
+    "time",       # Time formatting support
+    "local-time", # Local time support
+] }
+tracing-appender = "0.2" # Async log file appender
+time = { version = "0.3", features = [
+    "formatting",   # Time formatting utilities
+    "macros",       # Support for format_description! macro
+    "local-offset", # Local timezone support
+] }
