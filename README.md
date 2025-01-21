@@ -20,6 +20,51 @@ fn main() {
 }
 ```
 
+## Configuration Options
+
+The following table lists all available configuration options and their default values:
+
+| Option | Type | Default Value | Description |
+|--------|------|---------------|-------------|
+| `log_path` | `PathBuf` | `"C:/logs/"` | Base directory for log files |
+| `max_files` | `u32` | `5` | Maximum number of backup files to keep |
+| `max_size` | `u64` | `20 * 1024 * 1024` | Maximum size per log file in bytes (20MB) |
+| `is_async` | `bool` | `true` | Enable asynchronous logging |
+| `auto_flush` | `bool` | `false` | Enable automatic buffer flushing |
+| `file_name` | `String` | `"record"` | Base name for log files |
+| `instance_name` | `String` | `"default"` | Unique identifier for logger instance |
+
+### File Naming Convention
+
+- Main log file: `{file_name}.log`
+- Rotated files: `{file_name}.1.log`, `{file_name}.2.log`, etc.
+- Example: `app.log`, `app.1.log`, `app.2.log`
+
+### Configuration Example
+
+```rust
+let config = LogConfig::new()
+    .with_path("/var/log")               // Override default log path
+    .with_file_name("myapp.log")         // Custom file name
+    .with_max_size(10 * 1024 * 1024)     // 10MB per file
+    .with_max_files(3)                   // Keep 3 backup files
+    .with_async(true)                    // Use async logging
+    .with_auto_flush(true)              // Enable auto flush
+    .with_instance_name("myapp");       // Custom instance name
+```
+
+### Log Level Reference
+
+Available log levels in order of severity:
+
+| Level | Method | Usage |
+|-------|--------|-------|
+| DEBUG | `debug!()` | Detailed information for debugging |
+| INFO | `info!()` | General operational messages |
+| WARN | `warn!()` | Warning messages for potential issues |
+| ERROR | `error!()` | Error conditions |
+| FATAL | `fatal!()` | Critical errors (terminates program) |
+
 ## Key Features
 
 - **Multiple Logger Instances**: Run multiple loggers with different configurations
