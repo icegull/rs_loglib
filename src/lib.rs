@@ -1,29 +1,25 @@
+#[macro_use]
+extern crate lazy_static;
+
 use std::path::{Path, PathBuf};
-use std::sync::{Once, Arc};
-use std::io::{self, Write};
+use std::sync::Arc;
+use std::io;
+pub use std::io::Write;
 use std::fs::{File, OpenOptions};
-use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::registry::LookupSpan;
 use parking_lot::Mutex;
 use std::fs;
-use time::macros::format_description;
-use tracing_subscriber::fmt::time::LocalTime;
-use tracing_subscriber::fmt::format::{Writer, FormatEvent, FormatFields};
-use tracing::Subscriber;
-use tracing::Event;
-use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use tracing::Level;
+use time::macros::format_description;
 
-static INIT: Once = Once::new();
-
-struct FileState {
+pub(crate) struct FileState {
     file: File,
     size: u64,
 }
 
-struct RollingFileWriter {
+pub struct RollingFileWriter {
     state: Mutex<FileState>,
     base_path: PathBuf,
     max_size: u64,
@@ -134,7 +130,7 @@ impl Write for &RollingFileWriter {
 }
 
 #[derive(Clone)]
-struct WriterWrapper(Arc<RollingFileWriter>);
+pub struct WriterWrapper(pub(crate) Arc<RollingFileWriter>);
 
 impl Write for WriterWrapper {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -146,11 +142,13 @@ impl Write for WriterWrapper {
     }
 }
 
-impl<'a> MakeWriter<'a> for WriterWrapper {
-    type Writer = Self;
+impl Write for &WriterWrapper {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        (&*self.0).write(buf)
+    }
 
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
+    fn flush(&mut self) -> io::Result<()> {
+        (&*self.0).flush()
     }
 }
 
@@ -161,7 +159,8 @@ pub struct LogConfig {
     max_size: u64,
     is_async: bool,
     auto_flush: bool,
-    file_name: String,  // 新增字段
+    file_name: String,
+    instance_name: String,
 }
 
 impl Default for LogConfig {
@@ -172,7 +171,8 @@ impl Default for LogConfig {
             max_size: 20 * 1024 * 1024,
             is_async: true,
             auto_flush: false,
-            file_name: String::from("record"),  // 默认文件名
+            file_name: String::from("record"),
+            instance_name: String::from("default"),
         }
     }
 }
@@ -211,116 +211,121 @@ impl LogConfig {
         self.file_name = name.into();
         self
     }
-}
 
-struct CustomFormatter<T> {
-    timer: T,
-}
-
-impl<S, N, T> FormatEvent<S, N> for CustomFormatter<T>
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-    N: for<'a> FormatFields<'a> + 'static,
-    T: tracing_subscriber::fmt::time::FormatTime,
-{
-    fn format_event(
-        &self,
-        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
-        mut writer: Writer<'_>,
-        event: &Event<'_>,
-    ) -> fmt::Result {
-        // Write timestamp
-        self.timer.format_time(&mut writer)?;
-        writer.write_char(' ')?;
-
-        // Write level
-        let level = event.metadata().level();
-        write!(writer, "[{}]", level.as_str().to_lowercase())?;
-
-        // Write thread id using hash of thread id
-        let thread_id = std::thread::current().id();
-        let mut hasher = DefaultHasher::new();
-        thread_id.hash(&mut hasher);
-        write!(writer, "[{}]", hasher.finish() % 10000)?; // Use modulo to keep it readable
-
-        // Write message
-        writer.write_char(' ')?;
-        ctx.format_fields(writer.by_ref(), event)?;
-        writeln!(writer)
+    pub fn with_instance_name(mut self, name: &str) -> Self {
+        self.instance_name = name.to_string();
+        self
     }
 }
 
-pub fn init(config: LogConfig) {
-    INIT.call_once(|| {
-        let process_name = std::env::current_exe()
-            .ok()
-            .and_then(|pb| pb.file_name().map(|s| s.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| String::from("unknown"));
+pub struct Logger {
+    writer: WriterWrapper,
+    _guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+}
 
-        let log_dir = config.log_path.join(&process_name);
-        std::fs::create_dir_all(&log_dir).expect("Failed to create log directory");
-
-        let log_path = log_dir.join(&config.file_name); 
-        let file_writer = WriterWrapper(Arc::new(RollingFileWriter::new(
-            log_path,
-            config.max_size,
-            config.max_files,
-        ).expect("Failed to create rolling file writer")));
-
+impl Logger {
+    pub fn log(&self, level: Level, message: &str) -> io::Result<()> {
+        let now = time::OffsetDateTime::now_local().unwrap_or(time::OffsetDateTime::now_utc());
         let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]");
-        let timer = LocalTime::new(format);
-        let formatter = CustomFormatter { timer: timer.clone() };
+        let timestamp = now.format(&format).unwrap_or_default();
+        
+        let thread_id = std::thread::current().id();
+        let mut hasher = DefaultHasher::new();
+        thread_id.hash(&mut hasher);
+        let thread_hash = hasher.finish() % 10000;
 
-        let subscriber_builder = tracing_subscriber::fmt()
-            .with_max_level(LevelFilter::TRACE)
-            .with_ansi(false)
-            .with_writer(file_writer.clone())
-            .event_format(formatter);
+        let log_line = format!(
+            "{} [{}][{}] {}\n",
+            timestamp,
+            level.as_str().to_lowercase(),
+            thread_hash,
+            message
+        );
 
-        if config.is_async {
-            use std::sync::Mutex;
-            static GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> = Mutex::new(None);
-            let (non_blocking, guard) = tracing_appender::non_blocking(file_writer);
-            *GUARD.lock().unwrap() = Some(guard);
-            subscriber_builder.with_writer(non_blocking).init();
-        } else {
-            subscriber_builder.init();
-        }
-    });
+        let mut writer = self.writer.clone();
+        writer.write_all(log_line.as_bytes())
+    }
+}
+
+lazy_static! {
+    pub static ref LOGGER_INSTANCES: Mutex<HashMap<String, Logger>> = Mutex::new(HashMap::new());
+}
+
+pub fn init_logger(config: LogConfig) -> Result<String, io::Error> {
+    let instance_name = config.instance_name.clone();
+    let process_name = std::env::current_exe()
+        .ok()
+        .and_then(|pb| pb.file_name().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| String::from("unknown"));
+
+    let log_dir = config.log_path.join(&process_name);
+    std::fs::create_dir_all(&log_dir).expect("Failed to create log directory");
+
+    let log_path = log_dir.join(&config.file_name); 
+    let file_writer = WriterWrapper(Arc::new(RollingFileWriter::new(
+        log_path,
+        config.max_size,
+        config.max_files,
+    ).expect("Failed to create rolling file writer")));
+
+    let guard = if config.is_async {
+        let (_writer, guard) = tracing_appender::non_blocking(file_writer.clone());
+        Some(guard)
+    } else {
+        None
+    };
+
+    let logger = Logger {
+        writer: file_writer,
+        _guard: guard,
+    };
+
+    LOGGER_INSTANCES.lock().insert(instance_name.clone(), logger);
+    Ok(instance_name)
 }
 
 #[macro_export]
 macro_rules! info {
-    ($($arg:tt)*) => {
-        tracing::info!($($arg)*);
-    }
+    ($instance:expr, $($arg:tt)*) => {{
+        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
+            let _ = logger.log(tracing::Level::INFO, &format!($($arg)*));
+        }
+    }};
 }
 
 #[macro_export]
 macro_rules! error {
-    ($($arg:tt)*) => {
-        tracing::error!($($arg)*);
-    }
+    ($instance:expr, $($arg:tt)*) => {{
+        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
+            let _ = logger.log(tracing::Level::ERROR, &format!($($arg)*));
+        }
+    }};
 }
 
 #[macro_export]
 macro_rules! warn {
-    ($($arg:tt)*) => {
-        tracing::warn!($($arg)*);
-    }
+    ($instance:expr, $($arg:tt)*) => {{
+        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
+            let _ = logger.log(tracing::Level::WARN, &format!($($arg)*));
+        }
+    }};
 }
 
 #[macro_export]
 macro_rules! debug {
-    ($($arg:tt)*) => {
-        tracing::debug!($($arg)*);
-    }
+    ($instance:expr, $($arg:tt)*) => {{
+        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
+            let _ = logger.log(tracing::Level::DEBUG, &format!($($arg)*));
+        }
+    }};
 }
 
 #[macro_export]
 macro_rules! fatal {
-    ($($arg:tt)*) => {
-        tracing::error!("FATAL: {}", format!($($arg)*));
+    ($instance:expr, $($arg:tt)*) => {{
+        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
+            let _ = logger.log(tracing::Level::ERROR, &format!("FATAL: {}", format!($($arg)*)));
+        }
         std::process::exit(1);
-    }
+    }};
 }

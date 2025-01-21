@@ -1,16 +1,32 @@
 # rs_loglib
 
-A thread-safe Rust logging library with file rotation and async support, built on top of `tracing`.
+A high-performance, thread-safe logging library for Rust with rolling file support.
 
-## Features
+## Quick Start
 
-- Size-based log rotation with configurable file size
-- Backup file management with configurable file count
-- Async and sync logging support
-- Thread-safe implementation with efficient locking
-- Local timezone support
-- Customizable log file names and paths
-- Simple builder-style configuration
+```rust
+use rs_loglib::{LogConfig, info};
+
+fn main() {
+    // Initialize a logger instance
+    let instance = rs_loglib::init_logger(
+        LogConfig::new()
+            .with_instance_name("myapp")
+            .with_file_name("app.log")
+    ).unwrap();
+
+    // Log messages
+    info!(instance, "Hello from rs_loglib!");
+}
+```
+
+## Key Features
+
+- **Multiple Logger Instances**: Run multiple loggers with different configurations
+- **Rolling File Support**: Automatically rotate logs based on file size
+- **Thread Safety**: Safe for concurrent use across multiple threads
+- **Asynchronous Logging**: Optional non-blocking logging operations
+- **Structured Output**: Timestamp, log level, and thread ID in each log entry
 
 ## Installation
 
@@ -18,105 +34,104 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rs_loglib = { path = "path/to/rs_loglib" }
+rs_loglib = { git = "https://github.com/icegull/rs_loglib" }
 ```
 
-## Quick Start
+## Core Concepts
+
+### Logger Configuration
+
+The `LogConfig` builder provides a fluent interface for configuration:
 
 ```rust
-use rs_loglib::{LogConfig, info, error, warn, debug};
-
-fn main() {
-    // Basic configuration
-    let config = LogConfig::new()
-        .with_path("C:/logs")              // Log directory
-        .with_file_name("myapp.log")        // Base name for log files
-        .with_max_size(10 * 1024 * 1024) // 10MB per file
-        .with_max_files(5)              // Keep 5 backup files
-        .with_async(true);              // Use async logging
-
-    rs_loglib::init(config);
-
-    // Use logging macros
-    info!("Application started");
-    error!("Error: {}", "connection failed");
-    debug!("Debug info: {}", "detail");
-}
+let config = LogConfig::new()
+    .with_path("/var/log")          // Base log directory
+    .with_file_name("app.log")      // Log file name
+    .with_max_size(10 * 1024 * 1024)// Max file size (10MB)
+    .with_max_files(5)              // Keep 5 backup files
+    .with_async(true)               // Enable async logging
+    .with_instance_name("app1");    // Unique instance name
 ```
 
-## Configuration Options
+### Log Levels
 
-| Option | Method | Default | Description |
-|--------|---------|---------|-------------|
-| Log directory | `with_path()` | "C:/logs/" | Base directory for log files |
-| File name | `with_file_name()` | "record.log" | Base name for log files |
-| Max size | `with_max_size()` | 20MB | Size threshold for rotation |
-| Max files | `with_max_files()` | 5 | Number of backup files to keep |
-| Async mode | `with_async()` | true | Enable async logging |
-| Auto flush | `with_auto_flush()` | false | Enable automatic flushing |
+Five log levels are available:
 
-## Log File Management
-
-The library manages log files using the following pattern:
-- Active log: `{file_name}.log`
-- Backups: `{file_name}.1.log`, `{file_name}.2.log`, etc.
-
-When a log file reaches the configured size:
-1. Current file is renamed to `.1.log`
-2. Previous backups are shifted up
-3. Oldest backup is deleted if exceeding max_files
-4. New log file is created
-
-## Log Format
-
-Logs are written in the following format:
-```
-2024-01-21 11:58:36.150 [error][7257] Error message here
+```rust
+debug!(instance, "Debug information");
+info!(instance, "Normal operation");
+warn!(instance, "Warning condition");
+error!(instance, "Error condition");
+fatal!(instance, "Fatal error");  // Will terminate the program
 ```
 
-Components:
-- Timestamp in local timezone
-- Log level in lowercase
-- Thread ID (hashed to 4 digits)
-- Message content
+### Multiple Loggers
+
+Each logger instance is independent and can have its own configuration:
+
+```rust
+// Application logger
+let app_logger = init_logger(LogConfig::new()
+    .with_instance_name("app")
+    .with_file_name("app.log")
+).unwrap();
+
+// Access logger
+let access_logger = init_logger(LogConfig::new()
+    .with_instance_name("access")
+    .with_file_name("access.log")
+    .with_async(true)
+).unwrap();
+
+// Use different loggers
+info!(app_logger, "Application event");
+info!(access_logger, "Access event");
+```
+
+### Log Format
+
+Each log entry follows this format:
+```
+TIMESTAMP [LEVEL][THREAD] MESSAGE
+```
+
+Example output:
+```
+2024-01-20 15:30:45.123 [info][1234] Server started on port 8080
+2024-01-20 15:30:45.125 [error][1234] Failed to connect to database
+```
+
+## Performance Considerations
+
+- Enable async logging for high-throughput scenarios
+- Use appropriate max_size to balance between file size and rotation frequency
+- Consider file system performance when setting log directory location
 
 ## Thread Safety
 
-The library provides thread-safe logging through:
-- `parking_lot::Mutex` for efficient locking
-- Optional async logging via `tracing-appender`
-- Thread-safe file rotation mechanism
+All logging operations are thread-safe. The library uses:
+- Atomic operations for counters
+- Mutex protection for file operations
+- Lock-free algorithms where possible
 
-## Examples
+## Error Handling
 
-### Basic Synchronous Logging
+The library provides Result types for initialization:
+
 ```rust
-let config = LogConfig::new()
-    .with_path("C:/logs")
-    .with_file_name("sync_app.log")
-    .with_async(false);
-
-rs_loglib::init(config);
-info!("Sync logging initialized");
+match init_logger(config) {
+    Ok(instance) => info!(instance, "Logger initialized"),
+    Err(e) => panic!("Failed to initialize logger: {}", e),
+}
 ```
 
-### Async Logging with Custom Size
-```rust
-let config = LogConfig::new()
-    .with_path("C:/logs/")
-    .with_file_name("async_app.log")
-    .with_max_size(5 * 1024 * 1024)  // 5MB
-    .with_max_files(3)
-    .with_async(true);
+## Memory Usage
 
-rs_loglib::init(config);
-info!("Async logging initialized");
-```
+Log rotation helps manage disk space:
+- Old files are automatically removed
+- File size is monitored and managed
+- Async logging buffers are sized appropriately
 
 ## License
 
-Licensed under either of:
-- Apache License, Version 2.0
-- MIT license
-
-at your option.
+MIT License. See [LICENSE](LICENSE) for details.
