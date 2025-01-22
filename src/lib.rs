@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::io;
 pub use std::io::Write;
 use std::fs::{File, OpenOptions};
-use parking_lot::Mutex;
+use parking_lot::{RwLock, Mutex};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
@@ -17,8 +17,13 @@ pub(crate) struct FileState {
     size: u64,
 }
 
+pub(crate) struct RotationState {
+    is_rotating: bool,
+}
+
 pub struct RollingFileWriter {
-    state: Mutex<FileState>,
+    file_state: RwLock<FileState>,
+    rotation_state: Mutex<RotationState>,
     base_path: PathBuf,
     max_size: u64,
     max_files: u32,
@@ -35,7 +40,8 @@ impl RollingFileWriter {
         let size = file.metadata()?.len();
 
         Ok(Self {
-            state: Mutex::new(FileState { file, size }),
+            file_state: RwLock::new(FileState { file, size }),
+            rotation_state: Mutex::new(RotationState { is_rotating: false }),
             base_path,
             max_size,
             max_files,
@@ -44,15 +50,21 @@ impl RollingFileWriter {
     }
 
     fn rotate(&self) -> io::Result<()> {
-        let state = self.state.lock();
-        let current_file = &state.file;
+        let mut rotation_guard = self.rotation_state.lock();
+        if rotation_guard.is_rotating {
+            return Ok(());
+        }
+        rotation_guard.is_rotating = true;
+
+        let file_state = self.file_state.write();
+        let current_file = &file_state.file;
         
         // Close current file
         current_file.sync_all()?;
-        drop(state);  // Release lock early
+        drop(file_state);
 
         // Rotate existing files
-        for i in (1..self.max_files).rev() {
+        for i in (1..self.max_files - 1).rev() {
             let src = self.base_path.with_extension(format!("{}.log", i));
             let dst = self.base_path.with_extension(format!("{}.log", i + 1));
             if src.exists() {
@@ -71,27 +83,22 @@ impl RollingFileWriter {
             .append(true)
             .open(&current)?;
         
-        let mut state = self.state.lock();
-        state.file = file;
-        state.size = 0;
+        let mut file_state = self.file_state.write();
+        file_state.file = file;
+        file_state.size = 0;
 
-        // Remove oldest file if exists
-        let oldest = self.base_path.with_extension(format!("{}.log", self.max_files));
-        if oldest.exists() {
-            fs::remove_file(oldest)?;
-        }
-
+        rotation_guard.is_rotating = false;
         Ok(())
     }
 }
 
 impl Write for RollingFileWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut state = self.state.lock();
+        let state = self.file_state.read();
         if state.size + buf.len() as u64 > self.max_size {
             drop(state);
             self.rotate()?;
-            let mut state = self.state.lock();
+            let mut state = self.file_state.write();
             let written = state.file.write(buf)?;
             state.size += written as u64;
             if self.instant_flush {
@@ -99,6 +106,8 @@ impl Write for RollingFileWriter {
             }
             Ok(written)
         } else {
+            drop(state);
+            let mut state = self.file_state.write();
             let written = state.file.write(buf)?;
             state.size += written as u64;
             if self.instant_flush {
@@ -109,17 +118,17 @@ impl Write for RollingFileWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.state.lock().file.flush()
+        self.file_state.write().file.flush()
     }
 }
 
 impl Write for &RollingFileWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut state = self.state.lock();
+        let state = self.file_state.read();
         if state.size + buf.len() as u64 > self.max_size {
             drop(state);
             self.rotate()?;
-            let mut state = self.state.lock();
+            let mut state = self.file_state.write();
             let written = state.file.write(buf)?;
             state.size += written as u64;
             if self.instant_flush {
@@ -127,6 +136,8 @@ impl Write for &RollingFileWriter {
             }
             Ok(written)
         } else {
+            drop(state);
+            let mut state = self.file_state.write();
             let written = state.file.write(buf)?;
             state.size += written as u64;
             if self.instant_flush {
@@ -137,7 +148,7 @@ impl Write for &RollingFileWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.state.lock().file.flush()
+        self.file_state.write().file.flush()
     }
 }
 
