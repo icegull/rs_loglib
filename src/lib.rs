@@ -24,10 +24,11 @@ pub struct RollingFileWriter {
     base_path: PathBuf,
     max_size: u64,
     max_files: u32,
+    instant_flush: bool, 
 }
 
 impl RollingFileWriter {
-    fn new(base_path: PathBuf, max_size: u64, max_files: u32) -> io::Result<Self> {
+    fn new(base_path: PathBuf, max_size: u64, max_files: u32, instant_flush: bool) -> io::Result<Self> {
         let path = base_path.with_extension("log");
         let file = OpenOptions::new()
             .create(true)
@@ -40,6 +41,7 @@ impl RollingFileWriter {
             base_path,
             max_size,
             max_files,
+            instant_flush,
         })
     }
 
@@ -94,10 +96,16 @@ impl Write for RollingFileWriter {
             let mut state = self.state.lock();
             let written = state.file.write(buf)?;
             state.size += written as u64;
+            if self.instant_flush {
+                state.file.flush()?;
+            }
             Ok(written)
         } else {
             let written = state.file.write(buf)?;
             state.size += written as u64;
+            if self.instant_flush {
+                state.file.flush()?;
+            }
             Ok(written)
         }
     }
@@ -116,10 +124,16 @@ impl Write for &RollingFileWriter {
             let mut state = self.state.lock();
             let written = state.file.write(buf)?;
             state.size += written as u64;
+            if self.instant_flush {
+                state.file.flush()?;
+            }
             Ok(written)
         } else {
             let written = state.file.write(buf)?;
             state.size += written as u64;
+            if self.instant_flush {
+                state.file.flush()?;
+            }
             Ok(written)
         }
     }
@@ -158,7 +172,7 @@ pub struct LogConfig {
     max_files: u32,
     max_size: u64,
     is_async: bool,
-    auto_flush: bool,
+    instant_flush: bool,
     file_name: String,
     instance_name: String,
 }
@@ -170,7 +184,7 @@ impl Default for LogConfig {
             max_files: 5,
             max_size: 20 * 1024 * 1024,
             is_async: true,
-            auto_flush: false,
+            instant_flush: false,
             file_name: String::from("record"),
             instance_name: String::from("default"),
         }
@@ -202,8 +216,8 @@ impl LogConfig {
         self
     }
 
-    pub fn with_auto_flush(mut self, auto_flush: bool) -> Self {
-        self.auto_flush = auto_flush;
+    pub fn with_auto_flush(mut self, instant_flush: bool) -> Self {
+        self.instant_flush = instant_flush;
         self
     }
 
@@ -266,6 +280,7 @@ pub fn init_logger(config: LogConfig) -> Result<String, io::Error> {
         log_path,
         config.max_size,
         config.max_files,
+        config.instant_flush,  // Pass instant_flush setting
     ).expect("Failed to create rolling file writer")));
 
     let guard = if config.is_async {
