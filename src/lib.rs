@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate lazy_static;
 
 use std::path::{Path, PathBuf};
@@ -10,7 +9,6 @@ use parking_lot::Mutex;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
 use tracing::Level;
 use time::macros::format_description;
 
