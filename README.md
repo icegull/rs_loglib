@@ -30,7 +30,7 @@ The following table lists all available configuration options and their default 
 | `max_files` | `u32` | `5` | Maximum number of backup files to keep |
 | `max_size` | `u64` | `20 * 1024 * 1024` | Maximum size per log file in bytes (20MB) |
 | `is_async` | `bool` | `true` | Enable asynchronous logging |
-| `auto_flush` | `bool` | `false` | Enable automatic buffer flushing |
+| `instant_flush` | `bool` | `false` | Enable automatic buffer flushing |
 | `file_name` | `String` | `"record"` | Base name for log files |
 | `instance_name` | `String` | `"default"` | Unique identifier for logger instance |
 
@@ -50,7 +50,8 @@ let config = LogConfig::new()
     .with_max_files(3)                   // Keep 3 backup files
     .with_async(true)                    // Use async logging
     .with_auto_flush(true)              // Enable auto flush
-    .with_instance_name("myapp");       // Custom instance name
+    .with_instance_name("myapp")       // Custom instance name
+    .with_instant_flush("true");        //Enable instant flush
 ```
 
 ### Log Level Reference

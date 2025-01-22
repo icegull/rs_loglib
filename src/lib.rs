@@ -216,7 +216,7 @@ impl LogConfig {
         self
     }
 
-    pub fn with_auto_flush(mut self, instant_flush: bool) -> Self {
+    pub fn with_instant_flush(mut self, instant_flush: bool) -> Self {
         self.instant_flush = instant_flush;
         self
     }

@@ -5,6 +5,7 @@ fn main() {
         .with_instance_name("app1")
         .with_path("C:/logs/")
         .with_file_name("app1.log")
+        .with_instant_flush(false)
         .with_max_files(5);
 
     let instance1 = rs_loglib::init_logger(config1).unwrap();
