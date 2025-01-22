@@ -239,26 +239,32 @@ pub struct Logger {
 
 impl Logger {
     pub fn log(&self, level: Level, message: &str) -> io::Result<()> {
-        let now = time::OffsetDateTime::now_local().unwrap_or(time::OffsetDateTime::now_utc());
-        let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]");
-        let timestamp = now.format(&format).unwrap_or_default();
-        
         let thread_id = std::thread::current().id();
         let mut hasher = DefaultHasher::new();
         thread_id.hash(&mut hasher);
         let thread_hash = hasher.finish() % 10000;
 
-        let log_line = format!(
-            "{} [{}][{}] {}\n",
-            timestamp,
-            level.as_str().to_lowercase(),
-            thread_hash,
-            message
-        );
-
+        let log_line = format_log_message(level.as_str(), thread_hash, message);
+        
         let mut writer = self.writer.clone();
         writer.write_all(log_line.as_bytes())
     }
+}
+
+fn format_log_message(level: &str, thread_id: u64, message: &str) -> String {
+    let now = time::OffsetDateTime::now_local().unwrap_or(time::OffsetDateTime::now_utc());
+    let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]");
+    let timestamp = now.format(&format).unwrap_or_default();
+    let padded_level = format!("{:<5}", level.to_uppercase());
+    let padded_thread_id = format!("{:05}", thread_id);
+    
+    format!(
+        "{} [{}][{}] {}\n",
+        timestamp,
+        padded_thread_id,
+        padded_level,
+        message
+    )
 }
 
 lazy_static! {
