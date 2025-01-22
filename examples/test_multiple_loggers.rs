@@ -1,4 +1,5 @@
 use rs_loglib::{error, info, warn, LogConfig};
+use std::thread;
 
 fn main() {
     let config1 = LogConfig::new()
@@ -18,9 +19,30 @@ fn main() {
 
     let instance2 = rs_loglib::init_logger(config2).unwrap();
 
-    info!(instance1, "This is a message from app1");
-    error!(instance1, "Error in app1");
+    // Clone the instances for thread use
+    let instance1_clone = instance1.clone();
+    let instance2_clone = instance2.clone();
 
-    info!(instance2, "This is a message from app2");
-    warn!(instance2, "Warning in app2");
+    // Spawn thread for app1 logging
+    let thread1 = thread::spawn(move || {
+        for i in 0..10000 {
+            info!(instance1_clone, "Message {} from app1", i);
+            error!(instance1_clone, "Error {} in app1", i);
+           // thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+
+    // Spawn thread for app2 logging
+    let thread2 = thread::spawn(move || {
+        for i in 0..10000 {
+            info!(instance2_clone, "Message {} from app2", i);
+            warn!(instance2_clone, "Warning {} in app2", i);
+           // thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+
+    // Wait for both threads to complete
+    thread1.join().unwrap();
+    thread2.join().unwrap();
+    println!("Threads completed");
 }
