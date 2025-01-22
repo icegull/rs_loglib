@@ -232,9 +232,11 @@ impl LogConfig {
     }
 }
 
+#[derive(Clone)]
 pub struct Logger {
     writer: WriterWrapper,
-    _guard: Option<tracing_appender::non_blocking::WorkerGuard>,
+    #[allow(dead_code)]
+    instance_name: String,
 }
 
 impl Logger {
@@ -267,11 +269,7 @@ fn format_log_message(level: &str, thread_id: u64, message: &str) -> String {
     )
 }
 
-lazy_static! {
-    pub static ref LOGGER_INSTANCES: Mutex<HashMap<String, Logger>> = Mutex::new(HashMap::new());
-}
-
-pub fn init_logger(config: LogConfig) -> Result<String, io::Error> {
+pub fn init_logger(config: LogConfig) -> Result<Logger, io::Error> {
     let instance_name = config.instance_name.clone();
     let process_name = std::env::current_exe()
         .ok()
@@ -279,74 +277,54 @@ pub fn init_logger(config: LogConfig) -> Result<String, io::Error> {
         .unwrap_or_else(|| String::from("unknown"));
 
     let log_dir = config.log_path.join(&process_name);
-    std::fs::create_dir_all(&log_dir).expect("Failed to create log directory");
+    std::fs::create_dir_all(&log_dir)?;
 
     let log_path = log_dir.join(&config.file_name); 
     let file_writer = WriterWrapper(Arc::new(RollingFileWriter::new(
         log_path,
         config.max_size,
         config.max_files,
-        config.instant_flush,  // Pass instant_flush setting
-    ).expect("Failed to create rolling file writer")));
+        config.instant_flush,
+    )?));
 
-    let guard = if config.is_async {
-        let (_writer, guard) = tracing_appender::non_blocking(file_writer.clone());
-        Some(guard)
-    } else {
-        None
-    };
-
-    let logger = Logger {
+    Ok(Logger {
         writer: file_writer,
-        _guard: guard,
-    };
-
-    LOGGER_INSTANCES.lock().insert(instance_name.clone(), logger);
-    Ok(instance_name)
+        instance_name,
+    })
 }
 
 #[macro_export]
 macro_rules! info {
-    ($instance:expr, $($arg:tt)*) => {{
-        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
-            let _ = logger.log(tracing::Level::INFO, &format!($($arg)*));
-        }
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = $logger.log(tracing::Level::INFO, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! error {
-    ($instance:expr, $($arg:tt)*) => {{
-        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
-            let _ = logger.log(tracing::Level::ERROR, &format!($($arg)*));
-        }
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = $logger.log(tracing::Level::ERROR, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! warn {
-    ($instance:expr, $($arg:tt)*) => {{
-        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
-            let _ = logger.log(tracing::Level::WARN, &format!($($arg)*));
-        }
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = $logger.log(tracing::Level::WARN, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! debug {
-    ($instance:expr, $($arg:tt)*) => {{
-        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
-            let _ = logger.log(tracing::Level::DEBUG, &format!($($arg)*));
-        }
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = $logger.log(tracing::Level::DEBUG, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! fatal {
-    ($instance:expr, $($arg:tt)*) => {{
-        if let Some(logger) = $crate::LOGGER_INSTANCES.lock().get(&$instance) {
-            let _ = logger.log(tracing::Level::ERROR, &format!("FATAL: {}", format!($($arg)*)));
-        }
+    ($logger:expr, $($arg:tt)*) => {{
+        let _ = $logger.log(tracing::Level::ERROR, &format!("FATAL: {}", format!($($arg)*)));
         std::process::exit(1);
     }};
 }
