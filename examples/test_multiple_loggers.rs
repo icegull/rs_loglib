@@ -1,4 +1,4 @@
-use rs_loglib::{error, info, warn, LogConfig};
+use rs_loglib::{error, info, warn, LogConfig, Level};
 use std::thread;
 
 fn main() {
@@ -23,14 +23,14 @@ fn main() {
     let logger2_clone = logger2.clone();
 
     let thread1 = thread::spawn(move || {
-        for i in 0..10000000 {
+        for i in 0..1000 {
             info!(logger1_clone, "Message {} from app1", i);
             error!(logger1_clone, "Error {} in app1", i);
         }
     });
 
     let thread2 = thread::spawn(move || {
-        for i in 0..10000000 {
+        for i in 0..1000 {
             info!(logger2_clone, "Message {} from app2", i);
             warn!(logger2_clone, "Warning {} in app2", i);
         }

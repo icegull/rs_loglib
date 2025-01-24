@@ -9,8 +9,26 @@ use parking_lot::{RwLock, Mutex};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
-use tracing::Level;
 use time::macros::format_description;
+
+#[derive(Debug, Clone, Copy)]
+pub enum Level {
+    ERROR,
+    WARN,
+    INFO,
+    DEBUG,
+}
+
+impl Level {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Level::ERROR => "ERROR",
+            Level::WARN => "WARN",
+            Level::INFO => "INFO",
+            Level::DEBUG => "DEBUG",
+        }
+    }
+}
 
 pub(crate) struct FileState {
     file: File,
@@ -305,35 +323,35 @@ pub fn init_logger(config: LogConfig) -> Result<Logger, io::Error> {
 #[macro_export]
 macro_rules! info {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(tracing::Level::INFO, &format!($($arg)*));
+        let _ = $logger.log(Level::INFO, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! error {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(tracing::Level::ERROR, &format!($($arg)*));
+        let _ = $logger.log(Level::ERROR, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! warn {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(tracing::Level::WARN, &format!($($arg)*));
+        let _ = $logger.log(Level::WARN, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! debug {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(tracing::Level::DEBUG, &format!($($arg)*));
+        let _ = $logger.log(Level::DEBUG, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! fatal {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(tracing::Level::ERROR, &format!("FATAL: {}", format!($($arg)*)));
+        let _ = $logger.log(Level::ERROR, &format!("FATAL: {}", format!($($arg)*)));
         std::process::exit(1);
     }};
 }
