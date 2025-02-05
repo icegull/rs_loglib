@@ -2,6 +2,11 @@ use rs_loglib::{error, info, warn, LogConfig, Level};
 use std::thread;
 
 fn main() {
+    run_tests();
+    println!("Threads completed");
+}
+
+fn run_tests() {
     let config1 = LogConfig::new()
         .with_instance_name("app1")
         .with_path("C:/logs/")
@@ -38,5 +43,4 @@ fn main() {
 
     thread1.join().unwrap();
     thread2.join().unwrap();
-    println!("Threads completed");
 }
