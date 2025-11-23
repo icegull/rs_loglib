@@ -12,7 +12,8 @@ fn run_tests() {
         .with_path("C:/logs/")
         .with_file_name("app1.log")
         .with_instant_flush(false)
-        .with_max_files(5);
+        .with_max_files(5)
+        .with_max_size(5*1024*1024);
 
     let logger1 = rs_loglib::init_logger(config1).unwrap();
 
@@ -20,7 +21,8 @@ fn run_tests() {
         .with_instance_name("app2")
         .with_path("C:/logs/")
         .with_file_name("app2.log")
-        .with_max_files(3);
+        .with_max_files(3)
+        .with_max_size(8*1024*1024);
 
     let logger2 = rs_loglib::init_logger(config2).unwrap();
 
@@ -28,14 +30,14 @@ fn run_tests() {
     let logger2_clone = logger2.clone();
 
     let thread1 = thread::spawn(move || {
-        for i in 0..1000 {
+        for i in 0..100000 {
             info!(logger1_clone, "Message {} from app1", i);
             error!(logger1_clone, "Error {} in app1", i);
         }
     });
 
     let thread2 = thread::spawn(move || {
-        for i in 0..1000 {
+        for i in 0..100000 {
             info!(logger2_clone, "Message {} from app2", i);
             warn!(logger2_clone, "Warning {} in app2", i);
         }

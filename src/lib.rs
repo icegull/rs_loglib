@@ -2,11 +2,9 @@ extern crate lazy_static;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::io;
-pub use std::io::Write;
-use std::fs::{File, OpenOptions};
-use parking_lot::{RwLock, Mutex};
-use std::fs;
+use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use parking_lot::Mutex;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 use time::macros::format_description;
@@ -30,18 +28,13 @@ impl Level {
     }
 }
 
-pub(crate) struct FileState {
+struct InnerState {
     file: File,
-    size: u64,
-}
-
-pub(crate) struct RotationState {
-    is_rotating: bool,
+    current_size: u64,
 }
 
 pub struct RollingFileWriter {
-    file_state: RwLock<FileState>,
-    rotation_state: Mutex<RotationState>,
+    state: Mutex<InnerState>,
     base_path: PathBuf,
     max_size: u64,
     max_files: u32,
@@ -50,6 +43,10 @@ pub struct RollingFileWriter {
 
 impl RollingFileWriter {
     fn new(base_path: PathBuf, max_size: u64, max_files: u32, instant_flush: bool) -> io::Result<Self> {
+        if let Some(parent) = base_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
         let path = base_path.with_extension("log");
         let file = OpenOptions::new()
             .create(true)
@@ -58,8 +55,7 @@ impl RollingFileWriter {
         let size = file.metadata()?.len();
 
         Ok(Self {
-            file_state: RwLock::new(FileState { file, size }),
-            rotation_state: Mutex::new(RotationState { is_rotating: false }),
+            state: Mutex::new(InnerState { file, current_size: size }),
             base_path,
             max_size,
             max_files,
@@ -67,106 +63,69 @@ impl RollingFileWriter {
         })
     }
 
-    fn rotate(&self) -> io::Result<()> {
-        let mut rotation_guard = self.rotation_state.lock();
-        if rotation_guard.is_rotating {
+    fn rotate_locked(&self, state: &mut InnerState) -> io::Result<()> {
+        if state.current_size < self.max_size {
             return Ok(());
         }
-        rotation_guard.is_rotating = true;
 
-        let file_state = self.file_state.write();
-        let current_file = &file_state.file;
+        state.file.sync_all()?;
         
-        // Close current file
-        current_file.sync_all()?;
-        drop(file_state);
+        let get_path = |idx: u32| -> PathBuf {
+            if idx == 0 {
+                self.base_path.with_extension("log")
+            } else {
+                self.base_path.with_extension(format!("{}.log", idx))
+            }
+        };
 
-        // Rotate existing files
-        for i in (1..self.max_files - 1).rev() {
-            let src = self.base_path.with_extension(format!("{}.log", i));
-            let dst = self.base_path.with_extension(format!("{}.log", i + 1));
+        for i in (0..self.max_files - 1).rev() {
+            let src = get_path(i);
+            let dst = get_path(i + 1);
+            
             if src.exists() {
-                fs::rename(&src, &dst)?;
+                if dst.exists() {
+                    let _ = fs::remove_file(&dst); 
+                }
+                let _ = fs::rename(&src, &dst);
             }
         }
 
-        // Move current file to .1
-        let current = self.base_path.with_extension("log");
-        let backup = self.base_path.with_extension("1.log");
-        fs::rename(&current, &backup)?;
-
-        // Create new file
+        let path = self.base_path.with_extension("log");
         let file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&current)?;
+            .open(&path)?;
         
-        let mut file_state = self.file_state.write();
-        file_state.file = file;
-        file_state.size = 0;
-
-        rotation_guard.is_rotating = false;
+        state.file = file;
+        state.current_size = 0;
+        
         Ok(())
-    }
-}
-
-impl Write for RollingFileWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let state = self.file_state.read();
-        if state.size + buf.len() as u64 > self.max_size {
-            drop(state);
-            self.rotate()?;
-            let mut state = self.file_state.write();
-            let written = state.file.write(buf)?;
-            state.size += written as u64;
-            if self.instant_flush {
-                state.file.flush()?;
-            }
-            Ok(written)
-        } else {
-            drop(state);
-            let mut state = self.file_state.write();
-            let written = state.file.write(buf)?;
-            state.size += written as u64;
-            if self.instant_flush {
-                state.file.flush()?;
-            }
-            Ok(written)
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file_state.write().file.flush()
     }
 }
 
 impl Write for &RollingFileWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let state = self.file_state.read();
-        if state.size + buf.len() as u64 > self.max_size {
-            drop(state);
-            self.rotate()?;
-            let mut state = self.file_state.write();
-            let written = state.file.write(buf)?;
-            state.size += written as u64;
-            if self.instant_flush {
-                state.file.flush()?;
+        let mut state = self.state.lock();
+        
+        if state.current_size + buf.len() as u64 > self.max_size {
+            if let Err(e) = self.rotate_locked(&mut state) {
+                eprintln!("Log rotation failed: {}", e);
             }
-            Ok(written)
-        } else {
-            drop(state);
-            let mut state = self.file_state.write();
-            let written = state.file.write(buf)?;
-            state.size += written as u64;
-            if self.instant_flush {
-                state.file.flush()?;
-            }
-            Ok(written)
         }
+
+        let written = state.file.write(buf)?;
+        state.current_size += written as u64;
+        
+        if self.instant_flush {
+            state.file.flush()?;
+        }
+        
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file_state.write().file.flush()
+        let mut state = self.state.lock();
+        state.file.flush()
     }
 }
 
@@ -174,16 +133,6 @@ impl Write for &RollingFileWriter {
 pub struct WriterWrapper(pub(crate) Arc<RollingFileWriter>);
 
 impl Write for WriterWrapper {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (&*self.0).write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        (&*self.0).flush()
-    }
-}
-
-impl Write for &WriterWrapper {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         (&*self.0).write(buf)
     }
@@ -207,56 +156,26 @@ pub struct LogConfig {
 impl Default for LogConfig {
     fn default() -> Self {
         Self {
-            log_path: PathBuf::from("C:/logs/"),
+            log_path: PathBuf::from("logs"),
             max_files: 5,
             max_size: 20 * 1024 * 1024,
-            is_async: true,
+            is_async: false,
             instant_flush: false,
-            file_name: String::from("record"),
+            file_name: String::from("app"),
             instance_name: String::from("default"),
         }
     }
 }
 
 impl LogConfig {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    pub fn with_path<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.log_path = path.as_ref().to_path_buf();
-        self
-    }
-
-    pub fn with_max_files(mut self, count: u32) -> Self {
-        self.max_files = count;
-        self
-    }
-
-    pub fn with_max_size(mut self, size: u64) -> Self {
-        self.max_size = size;
-        self
-    }
-
-    pub fn with_async(mut self, is_async: bool) -> Self {
-        self.is_async = is_async;
-        self
-    }
-
-    pub fn with_instant_flush(mut self, instant_flush: bool) -> Self {
-        self.instant_flush = instant_flush;
-        self
-    }
-
-    pub fn with_file_name<S: Into<String>>(mut self, name: S) -> Self {
-        self.file_name = name.into();
-        self
-    }
-
-    pub fn with_instance_name(mut self, name: &str) -> Self {
-        self.instance_name = name.to_string();
-        self
-    }
+    pub fn new() -> Self { Default::default() }
+    pub fn with_path<P: AsRef<Path>>(mut self, path: P) -> Self { self.log_path = path.as_ref().to_path_buf(); self }
+    pub fn with_max_files(mut self, count: u32) -> Self { self.max_files = count; self }
+    pub fn with_max_size(mut self, size: u64) -> Self { self.max_size = size; self }
+    pub fn with_async(mut self, is_async: bool) -> Self { self.is_async = is_async; self }
+    pub fn with_instant_flush(mut self, instant_flush: bool) -> Self { self.instant_flush = instant_flush; self }
+    pub fn with_file_name<S: Into<String>>(mut self, name: S) -> Self { self.file_name = name.into(); self }
+    pub fn with_instance_name(mut self, name: &str) -> Self { self.instance_name = name.to_string(); self }
 }
 
 #[derive(Clone)]
@@ -268,45 +187,52 @@ pub struct Logger {
 
 impl Logger {
     pub fn log(&self, level: Level, message: &str) -> io::Result<()> {
-        let thread_id = std::thread::current().id();
-        let mut hasher = DefaultHasher::new();
-        thread_id.hash(&mut hasher);
-        let thread_hash = hasher.finish() % 10000;
+        thread_local! {
+            static THREAD_ID_STR: String = {
+                let thread_id = std::thread::current().id();
+                let mut hasher = DefaultHasher::new();
+                thread_id.hash(&mut hasher);
+                let thread_hash = hasher.finish() % 10000;
+                format!("{:05}", thread_hash)
+            };
+        }
 
-        let log_line = format_log_message(level.as_str(), thread_hash, message);
+        let log_line = THREAD_ID_STR.with(|tid_str| {
+            format_log_message(level.as_str(), tid_str, message)
+        });
         
         let mut writer = self.writer.clone();
         writer.write_all(log_line.as_bytes())
     }
 }
 
-fn format_log_message(level: &str, thread_id: u64, message: &str) -> String {
+fn format_log_message(level: &str, thread_id_str: &str, message: &str) -> String {
     let now = time::OffsetDateTime::now_local().unwrap_or(time::OffsetDateTime::now_utc());
     let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]");
     let timestamp = now.format(&format).unwrap_or_default();
-    let padded_level = format!("{:<5}", level.to_uppercase());
-    let padded_thread_id = format!("{:05}", thread_id);
     
     format!(
-        "{} [{}][{}] {}\n",
+        "{} [{}][{:<5}] {}\n",
         timestamp,
-        padded_thread_id,
-        padded_level,
+        thread_id_str,
+        level,
         message
     )
 }
 
 pub fn init_logger(config: LogConfig) -> Result<Logger, io::Error> {
     let instance_name = config.instance_name.clone();
-    let process_name = std::env::current_exe()
-        .ok()
-        .and_then(|pb| pb.file_name().map(|s| s.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| String::from("unknown"));
+    
+    let log_dir = &config.log_path;
+    std::fs::create_dir_all(log_dir)?;
 
-    let log_dir = config.log_path.join(&process_name);
-    std::fs::create_dir_all(&log_dir)?;
+    let file_stem = Path::new(&config.file_name).file_stem().unwrap_or(std::ffi::OsStr::new("app"));
+    let log_path = log_dir.join(file_stem); 
 
-    let log_path = log_dir.join(&config.file_name); 
+    if config.is_async {
+        eprintln!("Warning: Async logging requested but not implemented. Falling back to sync.");
+    }
+
     let file_writer = WriterWrapper(Arc::new(RollingFileWriter::new(
         log_path,
         config.max_size,
@@ -323,35 +249,35 @@ pub fn init_logger(config: LogConfig) -> Result<Logger, io::Error> {
 #[macro_export]
 macro_rules! info {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(Level::INFO, &format!($($arg)*));
+        let _ = $logger.log($crate::Level::INFO, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! error {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(Level::ERROR, &format!($($arg)*));
+        let _ = $logger.log($crate::Level::ERROR, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! warn {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(Level::WARN, &format!($($arg)*));
+        let _ = $logger.log($crate::Level::WARN, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! debug {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(Level::DEBUG, &format!($($arg)*));
+        let _ = $logger.log($crate::Level::DEBUG, &format!($($arg)*));
     }};
 }
 
 #[macro_export]
 macro_rules! fatal {
     ($logger:expr, $($arg:tt)*) => {{
-        let _ = $logger.log(Level::ERROR, &format!("FATAL: {}", format!($($arg)*)));
+        let _ = $logger.log($crate::Level::ERROR, &format!("FATAL: {}", format!($($arg)*)));
         std::process::exit(1);
     }};
 }
